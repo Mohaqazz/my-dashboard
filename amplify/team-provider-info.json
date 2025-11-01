@@ -1,0 +1,23 @@
+{
+  "prod": {
+    "awscloudformation": {
+      "AuthRoleName": "amplify-mydashboard-prod-95bc5-authRole",
+      "UnauthRoleArn": "arn:aws:iam::482001707572:role/amplify-mydashboard-prod-95bc5-unauthRole",
+      "AuthRoleArn": "arn:aws:iam::482001707572:role/amplify-mydashboard-prod-95bc5-authRole",
+      "Region": "eu-west-1",
+      "DeploymentBucketName": "amplify-mydashboard-prod-95bc5-deployment",
+      "UnauthRoleName": "amplify-mydashboard-prod-95bc5-unauthRole",
+      "StackName": "amplify-mydashboard-prod-95bc5",
+      "StackId": "arn:aws:cloudformation:eu-west-1:482001707572:stack/amplify-mydashboard-prod-95bc5/20e92210-b733-11f0-9323-0699175daaa7",
+      "AmplifyAppId": "d2yy65fkeorytv"
+    },
+    "categories": {
+      "hosting": {
+        "amplifyhosting": {
+          "appId": "d2yy65fkeorytv",
+          "type": "manual"
+        }
+      }
+    }
+  }
+}

@@ -890,7 +890,7 @@ const NetworkDashboard = () => {
                       <span className="text-red-400">{ru.Power_Watts.toFixed(1)} W</span>
                     </div>
                     <div className="flex justify-between">
-                      <span>UEs:</span>
+                      <span>Connected UEs:</span>
                       <span className="text-yellow-400">{ru.Connected_UEs}</span>
                     </div>
                   </div>
