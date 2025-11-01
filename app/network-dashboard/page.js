@@ -355,6 +355,32 @@ const NetworkDashboard = () => {
   const [lastMetricsUpdate, setLastMetricsUpdate] = useState(0);
   const [mapReady, setMapReady] = useState(false);
 
+// Agent Configuration
+const AGENT_CONFIG = {
+  agent_one: {
+    url: 'http://localhost:5000',  // Replace with Agent One URL
+    name: 'Agent One (Monitor)',
+    receives_kpis: true,
+    sends_actions: false
+  },
+  agent_two: {
+    url: 'http://localhost:5000',  // Replace with Agent Two URL  
+    name: 'Agent Two (Controller)',
+    receives_kpis: true,
+    sends_actions: true
+  }
+};
+
+// Performance thresholds
+const PERFORMANCE_THRESHOLDS = {
+  outage_threshold: 0.95,           // Emergency trigger if System_Outage > 0.95
+  emergency_cooldown_ms: 3000       // 3 seconds minimum between emergency sends
+};
+
+// Add emergency tracking state
+const [lastEmergencyKpiSend, setLastEmergencyKpiSend] = useState(0);
+const [emergencyTriggered, setEmergencyTriggered] = useState(false);
+
   const intervalRef = useRef(null);
   const fileInputRef = useRef(null);
   const mapRef = useRef(null);
@@ -566,6 +592,35 @@ useEffect(() => {
   }
 }, [currentTime, getCurrentUEs, updateSimulationMetrics, lastMetricsUpdate, agentMode]);
 
+useEffect(() => {
+  if (!agentMode || !metrics) return;
+
+  const currentOutage = metrics.systemMetrics.System_Outage;
+  const currentQoS = metrics.systemMetrics.QoS_Satisfaction;
+  const now = Date.now();
+  
+  // Check if emergency conditions are met
+  const isEmergencyCondition = currentOutage > PERFORMANCE_THRESHOLDS.outage_threshold;
+  
+  // Check cooldown period to prevent spam
+  const isWithinCooldown = (now - lastEmergencyKpiSend) < PERFORMANCE_THRESHOLDS.emergency_cooldown_ms;
+  
+  if (isEmergencyCondition && !isWithinCooldown) {
+    console.log(`🚨 EMERGENCY TRIGGERED: Outage ${(currentOutage * 100).toFixed(1)}% > ${(PERFORMANCE_THRESHOLDS.outage_threshold * 100)}%`);
+    console.log(`📊 Current QoS: ${(currentQoS * 100).toFixed(1)}%`);
+    
+    // Set emergency state
+    setEmergencyTriggered(true);
+    
+    // Send emergency KPIs immediately
+    sendKPIsToAgent(true); // true = emergency send
+    
+    // Clear emergency state after a delay
+    setTimeout(() => setEmergencyTriggered(false), 2000);
+  }
+  
+}, [metrics, agentMode, lastEmergencyKpiSend, PERFORMANCE_THRESHOLDS]);
+
   useEffect(() => {
     if (!leafletMapRef.current || !mapReady) return;
 
@@ -630,47 +685,77 @@ useEffect(() => {
   }, []);
 
 
-// Function to send KPIs to your agent
-const sendKPIsToAgent = async () => {
+// SEnding kpi function
+const sendKPIsToAgent = async (isEmergency = false) => {
   if (!agentMode || !metrics) return;
   
   try {
-    // Create per-BS data array in the format your agent expects
+    // Create per-BS data array in the format agents expect
     const perBsData = metrics.ruMetrics.map((ru, index) => {
       const prbUsed = Math.round(ru.Total_PRBs * ru.Load);
       const prbAvailable = ru.Total_PRBs - prbUsed;
       
       return {
         Time: currentTime,
-        Cell_name: `BS_${ru.RU_ID + 1}`,          // BS_1, BS_2, BS_3, etc.
-        UEThobDL: parseFloat(ru.Throughput_Mbps.toFixed(2)),   // Throughput in Mbps
-        PRBUSED_DL: prbUsed,                      // PRBs currently used
-        PRB_AVAILABLE: prbAvailable,              // PRBs available for use
-        PRBTOTAL: ru.Total_PRBs,                  // Total PRBs in this BS
-        connected_UEs: ru.Connected_UEs,          // Number of connected UEs
-        
-        // Additional useful info (optional - remove if agent doesn't want)
-        Power_State: ru.Power_State,              // "ON" or "OFF"
-        Load_Percentage: parseFloat((ru.Load * 100).toFixed(1)), // Load as percentage
-        Power_Watts: parseFloat(ru.Power_Watts.toFixed(1))       // Power consumption
+        Cell_name: `BS_${ru.RU_ID + 1}`,
+        UEThobDL: parseFloat(ru.Throughput_Mbps.toFixed(2)),
+        PRBUSED_DL: prbUsed,
+        PRB_AVAILABLE: prbAvailable,
+        PRBTOTAL: ru.Total_PRBs,
+        connected_UEs: ru.Connected_UEs,
+        Power_State: ru.Power_State,
+        Load_Percentage: parseFloat((ru.Load * 100).toFixed(1)),
+        Power_Watts: parseFloat(ru.Power_Watts.toFixed(1))
       };
     });
-    
-    console.log('Sending per-BS KPIs to agent:', perBsData);
-    
-    // Send array of per-BS data to agent
-    await fetch('http://localhost:5000/receive_kpis', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        timestamp: currentTime,
-        bs_data: perBsData,           // Array of 6 BS records
-        total_ues: getCurrentUEs().length
-      })
+
+    const kpiPayload = {
+      timestamp: currentTime,
+      bs_data: perBsData,
+      total_ues: getCurrentUEs().length,
+      system_metrics: {
+        outage: metrics.systemMetrics.System_Outage,
+        qos_satisfaction: metrics.systemMetrics.QoS_Satisfaction,
+        total_throughput_mbps: metrics.systemMetrics.Total_Throughput_Mbps,
+        total_power_watts: metrics.systemMetrics.Total_Energy_Watts
+      },
+      trigger_type: isEmergency ? 'emergency' : 'scheduled'
+    };
+
+    const sendType = isEmergency ? '🚨 EMERGENCY' : '📊 SCHEDULED';
+    console.log(`${sendType} KPIs to both agents:`, kpiPayload);
+
+    // Send to both agents in parallel
+    const agentPromises = Object.entries(AGENT_CONFIG).map(async ([agentKey, agentConfig]) => {
+      if (!agentConfig.receives_kpis) return;
+
+      try {
+        const response = await fetch(`${agentConfig.url}/receive_kpis`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(kpiPayload)
+        });
+
+        if (response.ok) {
+          console.log(`✅ ${agentConfig.name}: KPIs sent successfully`);
+        } else {
+          console.error(`❌ ${agentConfig.name}: HTTP ${response.status}`);
+        }
+      } catch (error) {
+        console.error(`❌ ${agentConfig.name}: ${error.message}`);
+      }
     });
-    
+
+    // Wait for all agents to receive KPIs
+    await Promise.all(agentPromises);
+
+    // Update emergency tracking
+    if (isEmergency) {
+      setLastEmergencyKpiSend(Date.now());
+    }
+
   } catch (error) {
-    console.error('Failed to send per-BS KPIs to agent:', error);
+    console.error('Failed to send KPIs to agents:', error);
   }
 };
 
@@ -678,14 +763,31 @@ const sendKPIsToAgent = async () => {
 const receiveAgentAction = async () => {
   if (!agentMode || !metrics) return;
   
+  // Only get actions from Agent Two (the controller)
+  const controllerAgent = AGENT_CONFIG.agent_two;
+  
+  if (!controllerAgent.sends_actions) {
+    console.log('⚠️ No controller agent configured to send actions');
+    return;
+  }
+  
   try {
-    console.log('Requesting action from agent...');
+    console.log(`🎮 Requesting action from ${controllerAgent.name}...`);
     
     // Prepare current state data for agent decision-making
     const currentState = {
       timestamp: currentTime,
-      current_bs_status: bsStatus,           // [true, false, true, false, true, true]
+      current_bs_status: bsStatus,
       total_ues: getCurrentUEs().length,
+      
+      // Send current performance metrics
+      system_performance: {
+        outage: metrics.systemMetrics.System_Outage,
+        qos_satisfaction: metrics.systemMetrics.QoS_Satisfaction,
+        total_throughput_mbps: metrics.systemMetrics.Total_Throughput_Mbps,
+        total_power_watts: metrics.systemMetrics.Total_Energy_Watts,
+        energy_efficiency: metrics.systemMetrics.Energy_Efficiency_Mbps_per_W
+      },
       
       // Send current per-BS state to help agent decide
       bs_state: metrics.ruMetrics.map(ru => ({
@@ -694,23 +796,32 @@ const receiveAgentAction = async () => {
         load_percentage: parseFloat((ru.Load * 100).toFixed(1)),
         connected_ues: ru.Connected_UEs,
         throughput_mbps: parseFloat(ru.Throughput_Mbps.toFixed(2)),
-        power_watts: parseFloat(ru.Power_Watts.toFixed(1))
-      }))
+        power_watts: parseFloat(ru.Power_Watts.toFixed(1)),
+        prb_used: Math.round(ru.Total_PRBs * ru.Load),
+        prb_total: ru.Total_PRBs
+      })),
+      
+      // Indicate if this is during emergency conditions
+      emergency_state: emergencyTriggered
     };
     
-    // Request new action from agent
-    const response = await fetch('http://localhost:5000/get_action', {
+    // Request new action from Agent Two only
+    const response = await fetch(`${controllerAgent.url}/get_action`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(currentState)
     });
     
+    if (!response.ok) {
+      console.error(`❌ ${controllerAgent.name}: HTTP ${response.status}`);
+      return;
+    }
+    
     const data = await response.json();
     
     // Handle agent response - expecting {"bs_actions": [true, false, true, false, true, true]}
     if (data.bs_actions && Array.isArray(data.bs_actions) && data.bs_actions.length === 6) {
-      console.log('Received agent action:', data.bs_actions);
-      console.log('Applying BS changes...');
+      console.log(`✅ ${controllerAgent.name} decision:`, data.bs_actions);
       
       // Check what changed
       const changes = bsStatus.map((current, i) => {
@@ -721,18 +832,24 @@ const receiveAgentAction = async () => {
       }).filter(Boolean);
       
       if (changes.length > 0) {
-        console.log('BS state changes:', changes);
+        console.log(`🔄 ${controllerAgent.name} changes:`, changes);
+        
+        // Show emergency context if applicable
+        if (emergencyTriggered) {
+          console.log('⚡ Action taken during emergency conditions');
+        }
       } else {
-        console.log('No BS state changes from agent');
+        console.log(`📋 ${controllerAgent.name}: No changes needed`);
       }
       
       setBsStatus(data.bs_actions); // This will automatically update the network!
     } else {
-      console.error('Invalid agent response format. Expected: {"bs_actions": [true, false, ...]}');
+      console.error(`❌ Invalid response from ${controllerAgent.name}. Expected: {"bs_actions": [true, false, ...]}`);
+      console.log('Received:', data);
     }
     
   } catch (error) {
-    console.error('Agent communication error:', error);
+    console.error(`❌ ${controllerAgent.name} communication error:`, error);
   }
 };
 
@@ -798,42 +915,44 @@ useEffect(() => {
             5G Network Dashboard - Leeds City Centre
           </h1>
           <div className="flex items-center gap-4">
-            // REPLACE the agent toggle button section with this:
 
-<div className="flex items-center gap-2">
-  <span className="text-sm text-gray-300">Agent Optimization:</span>
-  <button
-    onClick={() => {
-      const newAgentMode = !agentMode;
-      setAgentMode(newAgentMode);
+<div className="flex items-center gap-4">
+  <div className="flex items-center gap-2">
+    <span className="text-sm text-gray-300">Multi-Agent System:</span>
+    <button
+      onClick={() => {
+        const newAgentMode = !agentMode;
+        setAgentMode(newAgentMode);
+        
+        // When turning OFF agent mode, reset all RUs to ON
+        if (!newAgentMode) {
+          console.log('🔄 Multi-agent mode disabled - resetting all RUs to ON');
+          setBsStatus([true, true, true, true, true, true]);
+          setEmergencyTriggered(false);
+        }
+      }}
+      className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+        agentMode
+          ? 'bg-green-600 hover:bg-green-700 text-white'
+          : 'bg-gray-600 hover:bg-gray-700 text-gray-200'
+      }`}
+    >
+      {agentMode ? '🤖 AGENTS ON' : '📱 MANUAL'}
+    </button>
+  </div>
+
+  {agentMode && (
+    <div className="flex items-center gap-3 text-xs">
+         
+      {/* Emergency Indicator */}
+      {emergencyTriggered && (
+        <div className="flex items-center gap-1">
+          <div className="w-2 h-2 bg-red-500 rounded-full animate-ping"></div>
+          <span className="text-red-400 font-medium">EMERGENCY</span>
+        </div>
+      )}
       
-      // NEW: When turning OFF agent mode, reset all RUs to ON
-      if (!newAgentMode) {
-        console.log('🔄 Agent mode disabled - resetting all RUs to ON');
-        setBsStatus([true, true, true, true, true, true]);
-      }
-    }}
-    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-      agentMode
-        ? 'bg-green-600 hover:bg-green-700 text-white'
-        : 'bg-gray-600 hover:bg-gray-700 text-gray-200'
-    }`}
-  >
-    {agentMode ? '🤖 AGENT ON' : '📱 MANUAL'}
-  </button>
-  {agentMode && isRunning && (
-    <div className="text-xs text-green-400 animate-pulse">
-      AI Controlling BSs
-    </div>
-  )}
-  {agentMode && !isRunning && (
-    <div className="text-xs text-yellow-400">
-      Agent Ready (Start Sim)
-    </div>
-  )}
-  {!agentMode && (
-    <div className="text-xs text-blue-400">
-      Manual Control Active
+      
     </div>
   )}
 </div>
@@ -1008,7 +1127,7 @@ useEffect(() => {
               <br />
               ⚡ Non-linear energy scaling, outage detection, real KPIs
               <br />
-              🎮 Speed: {simulationSpeed}x | Metrics update every 5s
+              🎮 Speed: {simulationSpeed}x | Metrics update every 30s
             </div>
 
             {metrics?.ueMetrics && metrics.ueMetrics.length > 0 && (
