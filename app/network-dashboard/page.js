@@ -629,7 +629,6 @@ useEffect(() => {
     setSimulationSpeed(1.0);
   }, []);
 
-  // ADD THESE TWO FUNCTIONS RIGHT AFTER resetSimulation (around line 450)
 
 // Function to send KPIs to your agent
 const sendKPIsToAgent = async () => {
@@ -660,7 +659,7 @@ const sendKPIsToAgent = async () => {
     console.log('Sending per-BS KPIs to agent:', perBsData);
     
     // Send array of per-BS data to agent
-    await fetch('YOUR_AGENT_ENDPOINT/receive_kpis', {
+    await fetch('http://localhost:5000/receive_kpis', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -700,7 +699,7 @@ const receiveAgentAction = async () => {
     };
     
     // Request new action from agent
-    const response = await fetch('YOUR_AGENT_ENDPOINT/get_action', {
+    const response = await fetch('http://localhost:5000/get_action', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(currentState)
@@ -799,24 +798,45 @@ useEffect(() => {
             5G Network Dashboard - Leeds City Centre
           </h1>
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-300">Agent Optimization:</span>
-              <button
-                onClick={() => setAgentMode(!agentMode)}
-                className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                  agentMode
-                    ? 'bg-green-600 hover:bg-green-700 text-white'
-                    : 'bg-gray-600 hover:bg-gray-700 text-gray-200'
-                }`}
-              >
-                {agentMode ? '🤖 AGENT ON' : '📱 MANUAL'}
-              </button>
+            // REPLACE the agent toggle button section with this:
+
+<div className="flex items-center gap-2">
+  <span className="text-sm text-gray-300">Agent Optimization:</span>
+  <button
+    onClick={() => {
+      const newAgentMode = !agentMode;
+      setAgentMode(newAgentMode);
+      
+      // NEW: When turning OFF agent mode, reset all RUs to ON
+      if (!newAgentMode) {
+        console.log('🔄 Agent mode disabled - resetting all RUs to ON');
+        setBsStatus([true, true, true, true, true, true]);
+      }
+    }}
+    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+      agentMode
+        ? 'bg-green-600 hover:bg-green-700 text-white'
+        : 'bg-gray-600 hover:bg-gray-700 text-gray-200'
+    }`}
+  >
+    {agentMode ? '🤖 AGENT ON' : '📱 MANUAL'}
+  </button>
   {agentMode && isRunning && (
     <div className="text-xs text-green-400 animate-pulse">
       AI Controlling BSs
     </div>
   )}
-            </div>
+  {agentMode && !isRunning && (
+    <div className="text-xs text-yellow-400">
+      Agent Ready (Start Sim)
+    </div>
+  )}
+  {!agentMode && (
+    <div className="text-xs text-blue-400">
+      Manual Control Active
+    </div>
+  )}
+</div>
             <div className="text-sm text-gray-400">
             Time: {(() => {
     const totalSeconds = currentTime;
