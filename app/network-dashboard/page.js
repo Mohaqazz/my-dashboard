@@ -549,15 +549,22 @@ const NetworkDashboard = () => {
     });
   }, [getCurrentUEs, metersToGPS, mapReady]);
 
-  useEffect(() => {
-    if (currentTime > 0 && currentTime !== lastMetricsUpdate && currentTime % 5 === 0) {
-      const currentUEs = getCurrentUEs();
-      if (currentUEs.length > 0) {
-        updateSimulationMetrics(currentUEs);
-        setLastMetricsUpdate(currentTime);
+  // REPLACE the existing useEffect (around line 350-360) with this:
+
+useEffect(() => {
+  if (currentTime > 0 && currentTime !== lastMetricsUpdate && currentTime % 5 === 0) {
+    const currentUEs = getCurrentUEs();
+    if (currentUEs.length > 0) {
+      updateSimulationMetrics(currentUEs);
+      setLastMetricsUpdate(currentTime);
+      
+      // NEW: Send KPIs to agent when agent mode is active
+      if (agentMode) {
+        setTimeout(sendKPIsToAgent, 500); // Small delay to ensure metrics are updated
       }
     }
-  }, [currentTime, getCurrentUEs, updateSimulationMetrics, lastMetricsUpdate]);
+  }
+}, [currentTime, getCurrentUEs, updateSimulationMetrics, lastMetricsUpdate, agentMode]);
 
   useEffect(() => {
     if (!leafletMapRef.current || !mapReady) return;
@@ -622,6 +629,114 @@ const NetworkDashboard = () => {
     setSimulationSpeed(1.0);
   }, []);
 
+  // ADD THESE TWO FUNCTIONS RIGHT AFTER resetSimulation (around line 450)
+
+// Function to send KPIs to your agent
+const sendKPIsToAgent = async () => {
+  if (!agentMode || !metrics) return;
+  
+  try {
+    // Create per-BS data array in the format your agent expects
+    const perBsData = metrics.ruMetrics.map((ru, index) => {
+      const prbUsed = Math.round(ru.Total_PRBs * ru.Load);
+      const prbAvailable = ru.Total_PRBs - prbUsed;
+      
+      return {
+        Time: currentTime,
+        Cell_name: `BS_${ru.RU_ID + 1}`,          // BS_1, BS_2, BS_3, etc.
+        UEThobDL: parseFloat(ru.Throughput_Mbps.toFixed(2)),   // Throughput in Mbps
+        PRBUSED_DL: prbUsed,                      // PRBs currently used
+        PRB_AVAILABLE: prbAvailable,              // PRBs available for use
+        PRBTOTAL: ru.Total_PRBs,                  // Total PRBs in this BS
+        connected_UEs: ru.Connected_UEs,          // Number of connected UEs
+        
+        // Additional useful info (optional - remove if agent doesn't want)
+        Power_State: ru.Power_State,              // "ON" or "OFF"
+        Load_Percentage: parseFloat((ru.Load * 100).toFixed(1)), // Load as percentage
+        Power_Watts: parseFloat(ru.Power_Watts.toFixed(1))       // Power consumption
+      };
+    });
+    
+    console.log('Sending per-BS KPIs to agent:', perBsData);
+    
+    // Send array of per-BS data to agent
+    await fetch('YOUR_AGENT_ENDPOINT/receive_kpis', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        timestamp: currentTime,
+        bs_data: perBsData,           // Array of 6 BS records
+        total_ues: getCurrentUEs().length
+      })
+    });
+    
+  } catch (error) {
+    console.error('Failed to send per-BS KPIs to agent:', error);
+  }
+};
+
+// Function to receive actions from your agent
+const receiveAgentAction = async () => {
+  if (!agentMode || !metrics) return;
+  
+  try {
+    console.log('Requesting action from agent...');
+    
+    // Prepare current state data for agent decision-making
+    const currentState = {
+      timestamp: currentTime,
+      current_bs_status: bsStatus,           // [true, false, true, false, true, true]
+      total_ues: getCurrentUEs().length,
+      
+      // Send current per-BS state to help agent decide
+      bs_state: metrics.ruMetrics.map(ru => ({
+        bs_id: ru.RU_ID,
+        is_on: ru.Power_State === "ON",
+        load_percentage: parseFloat((ru.Load * 100).toFixed(1)),
+        connected_ues: ru.Connected_UEs,
+        throughput_mbps: parseFloat(ru.Throughput_Mbps.toFixed(2)),
+        power_watts: parseFloat(ru.Power_Watts.toFixed(1))
+      }))
+    };
+    
+    // Request new action from agent
+    const response = await fetch('YOUR_AGENT_ENDPOINT/get_action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentState)
+    });
+    
+    const data = await response.json();
+    
+    // Handle agent response - expecting {"bs_actions": [true, false, true, false, true, true]}
+    if (data.bs_actions && Array.isArray(data.bs_actions) && data.bs_actions.length === 6) {
+      console.log('Received agent action:', data.bs_actions);
+      console.log('Applying BS changes...');
+      
+      // Check what changed
+      const changes = bsStatus.map((current, i) => {
+        if (current !== data.bs_actions[i]) {
+          return `BS_${i+1}: ${current ? 'ON→OFF' : 'OFF→ON'}`;
+        }
+        return null;
+      }).filter(Boolean);
+      
+      if (changes.length > 0) {
+        console.log('BS state changes:', changes);
+      } else {
+        console.log('No BS state changes from agent');
+      }
+      
+      setBsStatus(data.bs_actions); // This will automatically update the network!
+    } else {
+      console.error('Invalid agent response format. Expected: {"bs_actions": [true, false, ...]}');
+    }
+    
+  } catch (error) {
+    console.error('Agent communication error:', error);
+  }
+};
+
   useEffect(() => {
     return () => {
       if (intervalRef.current) {
@@ -644,6 +759,32 @@ const NetworkDashboard = () => {
      }, intervalTime);
          }
     }, [simulationSpeed, isRunning]);
+
+  // ADD this new useEffect after all your existing useEffect hooks (around line 470-480)
+
+// Agent polling loop - requests actions from agent every 10 seconds
+useEffect(() => {
+  let agentInterval;
+  
+  if (agentMode && isRunning) {
+    console.log('🤖 Starting agent communication...');
+    
+    // Get initial action from agent immediately
+    setTimeout(receiveAgentAction, 1000);
+    
+    // Then poll agent every 10 seconds for new actions
+    agentInterval = setInterval(receiveAgentAction, 10000);
+  } else if (!agentMode) {
+    console.log('📱 Agent mode disabled - manual control');
+  }
+  
+  return () => {
+    if (agentInterval) {
+      clearInterval(agentInterval);
+      console.log('🛑 Stopped agent communication');
+    }
+  };
+}, [agentMode, isRunning]);
 
 
 
@@ -668,8 +809,13 @@ const NetworkDashboard = () => {
                     : 'bg-gray-600 hover:bg-gray-700 text-gray-200'
                 }`}
               >
-                {agentMode ? 'ON' : 'OFF'}
+                {agentMode ? '🤖 AGENT ON' : '📱 MANUAL'}
               </button>
+  {agentMode && isRunning && (
+    <div className="text-xs text-green-400 animate-pulse">
+      AI Controlling BSs
+    </div>
+  )}
             </div>
             <div className="text-sm text-gray-400">
             Time: {(() => {
@@ -711,7 +857,6 @@ const NetworkDashboard = () => {
               <div className="text-sm text-gray-400">
                 Loaded: {mobilityData.length} records
                 <br />
-                Time range: 0 - {maxTime}s
               </div>
             )}
           </div>
@@ -785,24 +930,32 @@ const NetworkDashboard = () => {
               <h3 className="text-lg font-semibold text-gray-200">System KPIs</h3>
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Throughput:</span>
+                  <span className="text-gray-400">Network Throughput:</span>
                   <span className="text-blue-400 font-medium">{metrics.systemMetrics.Total_Throughput_Mbps.toFixed(1)} Mbps</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Power:</span>
-                  <span className="text-red-400 font-medium">{metrics.systemMetrics.Total_Energy_Watts.toFixed(1)} W</span>
+                  <span className="text-gray-400">Total Cons. Power:</span>
+                  <span className="text-red-400 font-medium">{metrics.systemMetrics.Total_Energy_Watts.toFixed(1)}W</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">QoS:</span>
+                  <span className="text-gray-400">System Outage:</span>
+                  <span className="text-red-400 font-medium">{(metrics.systemMetrics.System_Outage * 100).toFixed(2)} %</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">QoS Satisfaction:</span>
                   <span className="text-green-400 font-medium">{(metrics.systemMetrics.QoS_Satisfaction * 100).toFixed(1)}%</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Efficiency:</span>
+                  <span className="text-gray-400">Thr/Pwr Efficiency:</span>
                   <span className="text-purple-400 font-medium">{metrics.systemMetrics.Energy_Efficiency_Mbps_per_W.toFixed(3)} Mbps/W</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-400">Active BSs:</span>
                   <span className="text-yellow-400 font-medium">{metrics.systemMetrics.Active_RUs}/{metrics.systemMetrics.Total_RUs}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Total UEs:</span>
+                  <span className="text-yellow-400 font-medium">{currentUEs.length}</span>
                 </div>
               </div>
             </div>
@@ -829,7 +982,7 @@ const NetworkDashboard = () => {
             </div>
 
             <div className="mt-4 text-sm text-gray-400">
-              📍 Interactive Leeds city map with authentic 5G calculations
+              📍 Interactive Leeds city map
               <br />
               🔬 UMi path loss, SNR/Shannon capacity, PRB allocation
               <br />
